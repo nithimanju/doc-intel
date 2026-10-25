@@ -1,0 +1,44 @@
+/* Only the handful of things Bootstrap's utilities don't cover directly.
+   Everything else (colors, spacing, components) comes from src/styles/custom.scss
+   and Bootstrap's own classes -- see decisions.md's note on this app's styling. */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--bs-font-sans-serif);
+}
+
+/* Responsive layout: below Bootstrap's xl breakpoint (1200px) there isn't
+   room for sidebar + review + PDF side by side, so .review-grid is a plain
+   flex column and only one pane is visible at a time -- App.tsx toggles
+   each pane's wrapper between d-flex/d-none based on mobileView, with
+   d-xl-flex forcing all three visible again at xl+. At xl+ this becomes
+   the real 3-column grid. Minimum column widths are kept well under 1200px
+   (240+320+360=920) so nothing overflows right at the breakpoint edge. */
+.review-grid {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.review-grid > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (min-width: 1200px) {
+  .review-grid {
+    display: grid;
+    grid-template-columns: minmax(240px, 300px) minmax(320px, 1fr) minmax(360px, 1.3fr);
+  }
+}
+
+/* Grid/flex children default to min-height/min-width: auto, which lets them
+   grow to fit their content instead of respecting the container's size --
+   this is what was clipping the action buttons and preventing the sidebar
+   and review pane from scrolling internally. Bootstrap has no utility for
+   this (there's no mh-0 min-height class), so it's custom CSS. */

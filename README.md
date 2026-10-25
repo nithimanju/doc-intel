@@ -1,2 +1,2 @@
-# doc-intel
-Document Intelligence
+﻿# doc-intel
+

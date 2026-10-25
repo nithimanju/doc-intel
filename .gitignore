@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+
+corpus/raw/*
+!corpus/raw/.gitkeep
+corpus/manifest.json
+
+corpus/.cache/
+
+frontend/admin/node_modules/
+frontend/admin/dist/
+frontend/admin/.vite/
+frontend/admin/*.tsbuildinfo

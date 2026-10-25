@@ -1,0 +1,65 @@
+// Bootstrap customization, following Bootstrap's own documented "Sass" workflow
+// (https://getbootstrap.com/docs/5.3/customize/sass/): override variables BEFORE
+// importing Bootstrap's source, rather than fighting the compiled CSS afterward.
+//
+// Dark mode uses Bootstrap 5.3's native color-mode system (`data-bs-theme`), with
+// the dark palette supplied as a `--bs-*` custom-property override block at the
+// bottom of this file -- Bootstrap's own documented pattern for per-mode tweaks
+// (see https://getbootstrap.com/docs/5.3/customize/color-modes/).
+
+// 1. Functions first (needed for color manipulation, etc.)
+@import "bootstrap/scss/functions";
+
+// 2. Variable overrides -- the project's palette, mapped onto Bootstrap's theme.
+$font-family-sans-serif: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+$font-family-monospace: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+
+$primary: #7a5c3e; // accent
+$secondary: #6b6355; // muted
+$success: #2f6b4f; // good
+$danger: #9c3b32; // bad
+$warning: #9c6b1f; // warn
+$light: #faf8f3; // surface-2
+$dark: #1d1a15; // fg
+
+$body-bg: #f3f1ec;
+$body-color: #1d1a15;
+$border-color: #ddd6c7;
+$border-radius: 0.5rem;
+$border-radius-sm: 0.4rem;
+$border-radius-lg: 0.65rem;
+$border-radius-pill: 999px;
+
+$card-border-color: $border-color;
+$list-group-border-color: $border-color;
+
+// 3. Required Bootstrap stylesheets
+@import "bootstrap/scss/variables";
+@import "bootstrap/scss/variables-dark";
+@import "bootstrap/scss/maps";
+@import "bootstrap/scss/mixins";
+@import "bootstrap/scss/root";
+
+// 4. The rest of Bootstrap
+@import "bootstrap/scss/bootstrap";
+
+// 5. Dark-mode palette, as CSS custom-property overrides under Bootstrap's own
+// `[data-bs-theme="dark"]` hook -- see link above.
+[data-bs-theme="dark"] {
+  --bs-body-bg: #151310;
+  --bs-body-color: #ece6d9;
+  --bs-border-color: #38332a;
+  --bs-secondary-bg: #211e18;
+  --bs-tertiary-bg: #1f1c17;
+  --bs-secondary-color: #9b9385;
+  --bs-primary: #c9a06d;
+  --bs-primary-rgb: 201, 160, 109;
+  --bs-success: #7fd1a8;
+  --bs-success-rgb: 127, 209, 168;
+  --bs-danger: #e8988c;
+  --bs-danger-rgb: 232, 152, 140;
+  --bs-warning: #e3bb6e;
+  --bs-warning-rgb: 227, 187, 110;
+  --bs-link-color: var(--bs-primary);
+  --bs-link-hover-color: var(--bs-primary);
+}

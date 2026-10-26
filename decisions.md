@@ -217,7 +217,160 @@ silently falling back to Bootstrap's default instead of erroring), or if
 cost worth trading back for `sass-embedded` once whatever blocked its
 subprocess spawn is understood.
 
+## [2026-10-27] Document Parser Choice, Database Choice, Index Choice.
+
+**Document Parser Selection:**
+
+I selected Docling because it is open source and runs on both CPU and CUDA.
+It uses a DocLayNet-trained layout model and TableFormer for table structure
+recognition, and it supports additional model integrations
+(https://docling-project.github.io/docling/usage/model_catalog/#image-classifier-picture-classifier).
+Output formats include Markdown, JSON, and DoclingDocument.
+
+Published comparisons consistently rank Docling above Unstructured on table
+structure extraction, but the available benchmarks are weak. The most
+methodologically complete comparison is vendor-published for a product that
+has since been discontinued; another derives its headline figure from a single
+48-cell table; and the two disagree on Unstructured by 18 points. I chose
+Docling based on the direction of those results plus ecosystem fit — CPU and
+CUDA support, DoclingDocument output, and TableFormer for tables — and I treat
+the accuracy claim as unverified until I run my own extraction evaluation.
+
+Docling configurations I considered:
+
+| Configuration | Models | Purpose |
+|---|---|---|
+| A — Standard baseline | Heron layout + RapidOCR + TableFormer Accurate + CodeFormulaV2 | Strong starting point with separately configurable stages |
+| B — Higher-accuracy layout | Egret Large + RapidOCR + TableFormer Accurate + CodeFormulaV2 | Test whether the larger layout model improves difficult pages |
+| C — VLM alternative | Docling VLM pipeline with Granite-Docling-258M; compare SmolDocling and GOT-OCR-2.0 | Evaluate end-to-end parsing on complex or image-heavy documents (lighter VLM option) |
+| D — VLM alternative | Docling VLM pipeline with mineru2_pro (1.2B model) | Heavier VLM alternative within the Docling pipeline |
+
+I also referred to OmniDocBench on PDFs
+(https://arxiv.org/html/2412.07626v2). From that paper, my understanding of
+per-task leaders (OmniDocBench v1, Dec 2024; later superseded on v1.5 by
+GLM-OCR, PaddleOCR-VL, and MinerU 2.5) is:
+
+- Layout detection — DocLayout-YOLO
+- Table recognition — RapidTable
+- Text recognition — PaddleOCR
+- Formula recognition — Mathpix (GPT-4o and UniMERNet-B are also strong)
+- Specialized VLM — GOT-OCR
+- General VLM — Qwen2-VL-72B
+
+Practical routing implied by that work:
+
+- Scanned PDFs → OCR-based pipelines
+- Complex layouts or embedded visual content → VLMs
+
+For general document parsing, MinerU is a strong alternative: it already
+includes its own layout-detection and parsing stages, and it ranks well as a
+full pipeline across tables, text, and reading order.
+
+Preferred starting point by document condition:
+
+| Document condition | Preferred starting point |
+|---|---|
+| Clean vector PDF with ordinary text | Native PDF text extraction |
+| Vector PDF with complex columns and tables | MinerU or another layout-aware pipeline |
+| Scanned PDF with ordinary text | OCR pipeline using PaddleOCR, or a complete parser |
+| Scanned PDF with dense tables | Layout detection + OCR / table recognition |
+| Complex diagrams with meaningful visual relationships | Pipeline plus targeted VLM analysis |
+| Poor-quality scans or unusual layouts | Compare pipeline and VLM outputs on representative pages |
+| Formula-heavy technical papers | Parser with formula support; specialized formula recognition where needed |
+
+I am going with Docling. There is no single best pipeline or VLM for every
+document type, and building a custom multi-model parsing stack would mean
+pipeline construction, output normalization across models, evaluation harness
+work, and custom routing. Docling already provides a ready-to-use document
+parser pipeline, so I am accepting that trade-off to avoid that complexity.
+
+**Database Selection:**
+
+I evaluated **pgvector**, **Qdrant**, **Milvus**, and **Neo4j**. I selected
+**pgvector**.
+
+**Chose: pgvector (Postgres + vector extension).** It is open source, easy to
+deploy, and integrates cleanly with Python. One database holds tenant metadata,
+business entities as relational SQL rows, and vectors together — no cross-DB
+join, sync, or dual-write stabilisation. Backup, restore, and migration stay
+ordinary Postgres operations. The vector index is derived and disposable; the
+canonical document store stays separate. That is why starting on pgvector is
+cheap to reverse if measurement later forces a move.
+
+**Trade-offs I accept with pgvector.**
+- Postgres `tsvector` is **not BM25**: it has no IDF weighting, so lexical
+  scores must be fused myself (typically with RRF). This corpus is full of part
+  numbers and identifiers where lexical search matters. That is the real
+  weakness, and it lands in Increment 1.
+- pgvector applies filters **after** the HNSW graph walk, so a selective filter
+  can discard every approximate candidate and hurt recall. I will filter by
+  `doc_id`, `chunk_type`, and `index_version_id`, and I will measure that
+  behaviour on this corpus.
+
+**Rejected for now: Qdrant and Milvus.** Both are strong purpose-built vector
+stores. Relative to pgvector they typically offer faster specialised HNSW
+paths, first-class hybrid / BM25-style lexical search, and mature filtered
+retrieval. I did **not** choose them for Increment 0 because a dedicated vector
+DB plus a separate relational store is over-engineering for ~200 documents: no
+single-DB ACID boundary across metadata and vectors, and I would need two
+systems (relational + vector) with cross-DB consistency. I will re-evaluate
+Qdrant/Milvus in **Increment 1** on index build time, query latency, BM25 /
+hybrid quality on identifier queries, and filtered-recall — and move only if
+measurement beats pgvector enough to justify the second service.
+
+**Deferred: Neo4j.** I am not selecting Neo4j yet. I will first measure
+multi-hop question answering with hybrid RAG and contextual / layout-aware
+chunking. Graph retrieval is justified only if that path fails the multi-hop
+slice of the eval set.
+
+**Indexing Selection:**
+
+I am choosing **HNSW** over **IVFFlat** in pgvector.
+
+**Why not IVFFlat as the primary index.** IVFFlat partitions vectors into
+`lists` clusters via k-means at build time, then at query time scans only the
+nearest `probes` lists. That makes builds fast and memory light, but the
+centroids are fixed when the index is created. As the corpus grows — especially
+when new embedding clusters appear — those centroids no longer represent the
+data well, so recall drops until a rebuild (`REINDEX`) recomputes them. HNSW
+has no training step and can be created on an empty table; inserts grow the
+graph without that centroid-staleness failure mode.
+
+**Published / measured comparisons I am using as priors** (my own corpus
+numbers will replace these once I measure on the Increment 0 index):
+
+| Property | IVFFlat | HNSW |
+|---|---|---|
+| Index build (AWS blog, ~58k rows, pgvector 0.5 → 0.6) | ~15 s | ~81 s → ~30 s after 0.6 build optimisations |
+| Query latency (same AWS setup) | ~2.4 ms | ~1.5 ms (vs ~650 ms sequential scan) |
+| Build vs query trade (independent 100k-vector measure) | ~5 s build; strong recall when data matches the original clusters | ~67 s build; ~50% larger index; recall stays stable as new vectors arrive |
+| After inserting vectors from *new* clusters (same 100k→150k measure) | Recall@10 fell from ~0.997 to **0.473** at `probes=10` until `REINDEX`; after rebuild, recall returned to ~1.0 | Grown-by-insert recall stayed within ~0.003 of a fresh HNSW build (no rebuild required) |
+| Recall/latency knob | `ivfflat.probes` (more lists scanned → higher recall and latency) | `hnsw.ef_search` (wider graph search → higher recall and latency) |
+
+Sources: AWS Database Blog on pgvector IVFFlat vs HNSW; Neon’s pgvector
+guidance (HNSW has no IVF training step; slower build, more memory); and the
+public 100k-vector IVFFlat-vs-HNSW measurement on new-cluster inserts.
+
+**HNSW advantages for this project.** Higher speed–recall trade-off for online
+queries; no periodic rebuild tax as I add documents across increments;
+incremental inserts keep recall stable; tunable with `m` /
+`ef_construction` (build quality) and `ef_search` (query recall). That fits a
+corpus that will grow and an eval loop that cannot afford silent recall decay
+from stale IVF centroids.
+
+**Trade-off I accept.** HNSW takes longer to build and uses more memory than
+IVFFlat. For the first bulk load I will **insert all vectors first, then
+`CREATE INDEX` with HNSW** — building HNSW on an empty table and inserting into
+it is substantially slower than load-then-index. I will record build time,
+query p95, and recall@k for the chosen `(m, ef_construction, ef_search)` in
+this log once the full corpus is indexed.
+
+**How I'd know this was wrong:** if HNSW build time or memory becomes the
+binding constraint at full corpus size while measured recall@k on IVFFlat
+(with a rebuild policy) matches HNSW within tolerance — then IVFFlat with
+scheduled reindex would be the better fit.
 ---
+
 
 ## Debug drill
 

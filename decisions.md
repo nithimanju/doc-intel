@@ -369,6 +369,53 @@ this log once the full corpus is indexed.
 binding constraint at full corpus size while measured recall@k on IVFFlat
 (with a rebuild policy) matches HNSW within tolerance — then IVFFlat with
 scheduled reindex would be the better fit.
+
+## [2026-10-28] Docker Compose Setup & Docling Implementation.
+**Docker Compose setup with live code integration:**
+
+**Chose:** A Linux dev container under `docker/dev/` (`Dockerfile` +
+`docker-compose.yml`) that runs the Python stack (including Docling) outside
+Windows Smart App Control.
+
+**Why.** A fresh Windows `.venv` install of pandas **3.1.0** and current Docling
+fails under Smart App Control: native extensions (e.g. pandas `interval*.pyd`)
+and console `.exe` entry points are blocked at load time, so Docling cannot
+import on the host. The older, already-trusted packages still work, which confirms the blocker is policy/reputation on newly downloaded binaries — not Docling itself. Running the same stack in Linux containers avoids that Windows code-integrity path.
+
+**Layout.**
+- Image: `python:3.12-slim-bookworm` with system libs Docling needs (`libgl1`,
+  `libglib`, `libgomp`, etc.) and `pip install -r requirements.txt` baked in.
+- Bind-mount the repo root to `/workspace` so host edits appear in the container
+  immediately — no image rebuild for code changes.
+- Bind-mount host HuggingFace and Torch caches into `/cache/...` so model
+  downloads persist across rebuilds and are shared with other projects on this
+  machine.
+- Container stays up with `sleep infinity`; I attach with
+  `docker compose … exec dev bash` and restart with
+  `docker compose … restart dev` when needed.
+
+**Operational rules I am accepting.**
+- **Code change** → no rebuild, no restart; the bind mount is enough.
+- **Environment / process change** → `restart` the `dev` service (or re-exec a
+  shell and restart the process inside).
+- **`requirements.txt` change** → `up -d --build` so site-packages in the image
+  are refreshed. Runtime mounts overwrite `/workspace` but not the image’s
+  installed packages.
+
+**Rejected for now:** Disabling Smart App Control system-wide just to run the
+Windows venv — one-way on many Windows 11 installs and broader than this
+project needs. Also rejected: copying AMI’s trusted `.venv312` into this repo
+as a permanent dependency (cross-repo coupling, wrong package pins).
+
+**Trade-off accepted:** Docker Desktop must be running; first build pulls models
+and base layers; Linux paths differ from Windows. In exchange I get a
+reproducible Docling/Python environment that is not blocked by host App Control,
+with a fast edit–run loop via the volume mount.
+
+**How I'd know this was wrong:** if Smart App Control is turned off (or an
+allowlist covers `.venv`) and a clean Windows venv imports Docling reliably, the
+container becomes optional overhead; or if bind-mount I/O on Windows makes
+Docling/PDF workloads unusably slow compared with copying code into the image.
 ---
 
 

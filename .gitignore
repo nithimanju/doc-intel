@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .env
+.venv/
 
 corpus/raw/*
 !corpus/raw/.gitkeep
@@ -12,3 +13,4 @@ frontend/admin/node_modules/
 frontend/admin/dist/
 frontend/admin/.vite/
 frontend/admin/*.tsbuildinfo
+logs/**

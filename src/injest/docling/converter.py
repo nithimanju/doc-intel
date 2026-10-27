@@ -185,7 +185,7 @@ def get_default_modes(
     do_cell_matching: bool = True,
     isTesseract: bool = True,
     is_ocr_cpu_only: bool = False,
-    backend: Any = "pypdfium2",
+    backend: Any = PyPdfiumDocumentBackend,
     do_heading_hierarchy: bool = True,
 ) -> dict[Any, Any]:
     pipeline_options = PdfPipelineOptions()

@@ -1,0 +1,22 @@
+services:
+  dev:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    image: doc-intel-dev:latest
+    container_name: doc-intel-dev
+    working_dir: /workspace
+    command: sleep infinity
+    stdin_open: true
+    tty: true
+    env_file:
+      - ../../.env
+    environment:
+      HF_HOME: /cache/huggingface
+      HUGGINGFACE_HUB_CACHE: /cache/huggingface/hub
+      TRANSFORMERS_CACHE: /cache/huggingface/hub
+      TORCH_HOME: /cache/torch
+    volumes:
+      - ../..:/workspace
+      - ${DOC_INTEL_HF_CACHE:-${USERPROFILE}/.cache/huggingface}:/cache/huggingface
+      - ${DOC_INTEL_TORCH_CACHE:-${USERPROFILE}/.cache/torch}:/cache/torch

@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: doc-intel
+Version: 0.1.0
+Summary: Document intelligence: measured retrieval, agents, eval, deploy
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31
+Requires-Dist: pypdf>=4.0
+Requires-Dist: pymupdf>=1.24
+Requires-Dist: docling>=2.143.0
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: psycopg[binary]>=3.2
+Requires-Dist: pgvector>=0.3
+Requires-Dist: alembic>=1.13
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+
+﻿# doc-intel
+

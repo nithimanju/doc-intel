@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(_REPO_ROOT / ".env", override=True)
+load_dotenv(_REPO_ROOT / ".env", override=False)
 
 LOG_FILE: str = os.getenv("LOG_FILE", "logs/doc-intel.log")
 
@@ -17,6 +17,8 @@ EMBEDDING_MODEL_NAME: str = os.getenv(
     "google/embeddinggemma-300m",
 )
 CHUNK_MAX_TOKEN_LIMIT: int = int(os.getenv("CHUNK_MAX_TOKEN_LIMIT", "1000"))
+
+EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "768"))
 
 HF_TOKEN: str | None = os.getenv("HF_TOKEN") or None
 

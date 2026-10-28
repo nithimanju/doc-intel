@@ -384,7 +384,7 @@ import on the host. The older, already-trusted packages still work, which confir
 
 **Layout.**
 - Image: `python:3.12-slim-bookworm` with system libs Docling needs (`libgl1`,
-  `libglib`, `libgomp`, etc.) and `pip install -r requirements.txt` baked in.
+  `libglib`, `libgomp`, etc.) and `pip install .` from `pyproject.toml` baked in.
 - Bind-mount the repo root to `/workspace` so host edits appear in the container
   immediately — no image rebuild for code changes.
 - Bind-mount host HuggingFace and Torch caches into `/cache/...` so model
@@ -398,9 +398,9 @@ import on the host. The older, already-trusted packages still work, which confir
 - **Code change** → no rebuild, no restart; the bind mount is enough.
 - **Environment / process change** → `restart` the `dev` service (or re-exec a
   shell and restart the process inside).
-- **`requirements.txt` change** → `up -d --build` so site-packages in the image
-  are refreshed. Runtime mounts overwrite `/workspace` but not the image’s
-  installed packages.
+- **`pyproject.toml` dependency change** → `up -d --build` so site-packages in
+  the image are refreshed. Runtime mounts overwrite `/workspace` but not the
+  image’s installed packages.
 
 **Rejected for now:** Disabling Smart App Control system-wide just to run the
 Windows venv — one-way on many Windows 11 installs and broader than this
@@ -416,10 +416,82 @@ with a fast edit–run loop via the volume mount.
 allowlist covers `.venv`) and a clean Windows venv imports Docling reliably, the
 container becomes optional overhead; or if bind-mount I/O on Windows makes
 Docling/PDF workloads unusably slow compared with copying code into the image.
+
+---
+
+## [2026-10-28] Packaging (pyproject.toml), Postgres migrations, driver, and compose layout
+
+**Chose:**
+- **`pyproject.toml` (PEP 621)** as the single declared dependency source —
+  runtime deps (`docling`, `psycopg[binary]`, `pgvector`, `alembic`, …),
+  optional `dev` extras (`pytest`, `ruff`), and tool config for setuptools /
+  pytest / ruff in one file. The Docker image installs with `pip install .`
+  from that file; dependency bumps mean rebuild (`up -d --build`).
+- **Alembic** for schema migrations, with the first revision creating the
+  `vector` extension (`alembic/versions/a81c97fe7f23_create_vector_extension.py`).
+  `alembic/env.py` injects `DATABASE_URL` from `src.config.settings` (built from
+  `POSTGRES_*` in `.env`) so `alembic.ini` never holds live credentials or
+  unexpanded `${…}` placeholders.
+- **psycopg v3** (`postgresql+psycopg://…`) plus the **`pgvector`** Python
+  package for the vector type, against a **`pgvector/pgvector:pg18`** container.
+- **Two Compose files:** `docker/dev/docker-compose.yml` (app/dev) and
+  `docker/dev/docker-compose-db.yml` (Postgres + named volume), merged at
+  runtime with `--env-file .env`. Host-side tools use `localhost` and a
+  published port (5433 by default, to avoid clashing with a native Windows
+  Postgres on 5432); the app container overrides to `db:5432` on the compose
+  network.
+
+**Rejected:**
+- *`requirements.txt` (or a parallel pin file beside `pyproject.toml`)* — a
+  second list drifts from the installable project metadata and duplicates what
+  Docker already consumes via `pip install .`. One TOML file is enough at this
+  size.
+- *Poetry / uv lockfile-first workflows* — useful later for reproducible CI
+  pins; premature while the stack is still settling and Docker rebuilds are the
+  install path.
+- *Hand-rolled numbered SQL plus a custom runner* — at this schema size it
+  would mean more files and glue to maintain by hand for no real benefit over
+  Alembic's revision chain and `upgrade head`.
+- *psycopg2* — legacy; psycopg v3 is the current sync driver and matches the
+  SQLAlchemy URL we need for Alembic.
+- *asyncpg* — there is no async data-access path elsewhere in the project yet;
+  introducing one only for migrations or early storage would be speculative.
+- *SQLAlchemy ORM as a required layer* — not needed until/unless I actually
+  want mapped models; Alembic + psycopg is enough for extension DDL and later
+  imperative migrations.
+- *Folding `db` into the existing `docker-compose.yml`* — that couples the
+  database lifecycle to the Docling/dev container (rebuilds, GPU overlays,
+  bind-mount churn). Keeping DB in a separate compose file lets me bring
+  Postgres up alone for Alembic on the host.
+
+**Trade-off accepted:** Two compose invocations (or a short alias) instead of
+one file; and host vs container Postgres hostnames must stay explicit in `.env`
+/ compose overrides. Packaging-wise, floating lower bounds in `pyproject.toml`
+mean rebuilds can pull newer minors until I add a lockfile. In exchange I get
+one install source for local and Docker, a disposable vector-capable Postgres
+that can outlive the app container, and migrations that run the same way from
+Windows or from inside `doc-intel-dev`.
+
+**What is in place now:** `pyproject.toml` owns deps and tool config;
+`requirements.txt` removed; `CREATE EXTENSION vector` applied via
+`alembic upgrade head`; connection settings centralized in `.env` /
+`settings.DATABASE_URL`; DB volume mounted at `/var/lib/postgresql` for the
+PG 18 image layout.
+
+**How I'd know this was wrong:** if CI or teammate installs need bit-for-bit
+reproducible pins that floating `>=` ranges cannot give — then add a lockfile
+(uv/poetry) without abandoning `pyproject.toml` metadata; if Alembic's
+migration history starts needing branching/merging that feels heavier than the
+schema warrants — then a thin numbered-SQL runner would have been enough; or if
+psycopg's pgvector adapter hits a rough edge that the `pgvector` Python package
+does not smooth over — then reconsider asyncpg or a different access path for
+vector I/O only.
+
 ---
 
 
 ## Debug drill
+
 
 _(Pending — per CLAUDE.md, once per increment the author breaks something
 deliberately and fixes it without AI help, recorded here under this heading.

@@ -33,3 +33,14 @@ DOCLING_DO_HEADING_HIERARCHY: bool = (
 DOCLING_PDF_BACKEND: str = os.getenv("DOCLING_PDF_BACKEND", "pypdfium2")
 
 INDEX_VERSION_ID: str | None = os.getenv("INDEX_VERSION_ID") or None
+
+POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "postgres")
+POSTGRES_DB: str = os.getenv("POSTGRES_DB", "doc_intel")
+POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
+
+DATABASE_URL: str = (
+    f"postgresql+psycopg://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+    f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)

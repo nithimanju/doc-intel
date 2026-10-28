@@ -23,9 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-COPY requirements.txt /tmp/requirements.txt
+COPY pyproject.toml README.md ./
+COPY src ./src
 RUN pip install --upgrade pip \
- && pip install --no-cache-dir -r /tmp/requirements.txt \
+ && pip install --no-cache-dir . \
  && python -c "import docling; print('docling-ok')"
 
 CMD ["bash"]

@@ -1,0 +1,28 @@
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    container_name: doc-intel-db
+    volumes:
+      - doc_intel_pgdata:/var/lib/postgresql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-doc_intel}
+    networks:
+      - doc_intel_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  doc_intel_pgdata:
+    driver: local
+
+networks:
+  doc_intel_network:
+    name: doc_intel_network

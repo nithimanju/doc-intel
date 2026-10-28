@@ -16,7 +16,18 @@ services:
       HUGGINGFACE_HUB_CACHE: /cache/huggingface/hub
       TRANSFORMERS_CACHE: /cache/huggingface/hub
       TORCH_HOME: /cache/torch
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
     volumes:
       - ../..:/workspace
       - ${DOC_INTEL_HF_CACHE:-${USERPROFILE}/.cache/huggingface}:/cache/huggingface
       - ${DOC_INTEL_TORCH_CACHE:-${USERPROFILE}/.cache/torch}:/cache/torch
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - doc_intel_network
+
+networks:
+  doc_intel_network:
+    name: doc_intel_network

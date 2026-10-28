@@ -487,8 +487,117 @@ psycopg's pgvector adapter hits a rough edge that the `pgvector` Python package
 does not smooth over — then reconsider asyncpg or a different access path for
 vector I/O only.
 
+**DDL of RAG eval:**
+Since the project is about improvement and comparision of the improvement with the help of eval results, we need to store the improvement by recording the changes being done and resulting eval records, So we can revisit and verify and get the pattern of the run status.
+
+For this purpose we are desing these tables:
+
+INDEX_VERSION: INDEX_VERSION_ID (PK), DESCRIPTION (nullable), CHUNKER_ID (FK → CHUNKER, NOT NULL, idx), EMBEDDER_ID (FK → EMBEDDER, NOT NULL, idx), PARSER_ID (FK → PARSER, NOT NULL, idx), CONFIG (nullable unless INDEX_*_CONFIG is unused), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL)
+INDEX_RUN: INDEX_RUN_ID (PK — add if missing), DOC_COUNT (NOT NULL), CHUNK_COUNT (NOT NULL), TIME_ELAPSED (nullable until complete), STATUS_ID (FK → STATUS, NOT NULL, idx), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL); FK INDEX_VERSION_ID (→ INDEX_VERSION, NOT NULL, idx) if each run belongs to a version
+CHUNKER: CHUNKER_ID (PK), CHUNKER_NAME (NOT NULL), CHUNKER_DESCRIPTION (nullable), VERSION (NOT NULL), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); UNIQUE (CHUNKER_NAME, VERSION)
+PARSER_ID: PARSER_ID (PK), PARSER_NAME (NOT NULL), PARSER_DESCRIPTION (nullable), VERSION (NOT NULL), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); UNIQUE (PARSER_NAME, VERSION)
+EMBEDDER_ID: EMBEDDER_ID (PK), EMBEDDER_NAME (NOT NULL), EMBEDDER_DESCRIPTION (nullable), VERSION (NOT NULL), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); UNIQUE (EMBEDDER_NAME, VERSION)
+INDEX_PARSER_CONFIG: INDEX_VERSION_ID (FK → INDEX_VERSION, NOT NULL, idx), PARSER_ID (FK → PARSER, NOT NULL, idx), CONFIG_NAME (NOT NULL), CONFIG_VALUE (NOT NULL), DESCRIPTION (nullable), DETAILS (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); PK or UNIQUE (INDEX_VERSION_ID, PARSER_ID, CONFIG_NAME); ON DELETE CASCADE with INDEX_VERSION
+INDEX_CHUNKER_CONFIG: INDEX_VERSION_ID (FK → INDEX_VERSION, NOT NULL, idx), CHUNKER_ID (FK → CHUNKER, NOT NULL, idx), CONFIG_NAME (NOT NULL), CONFIG_VALUE (NOT NULL), DESCRIPTION (nullable), DETAILS (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); PK or UNIQUE (INDEX_VERSION_ID, CHUNKER_ID, CONFIG_NAME); ON DELETE CASCADE with INDEX_VERSION
+INDEX_EMBEDDER_CONFIG: INDEX_VERSION_ID (FK → INDEX_VERSION, NOT NULL, idx), EMBEDDER_ID (FK → EMBEDDER, NOT NULL, idx), CONFIG_NAME (NOT NULL), CONFIG_VALUE (NOT NULL), DESCRIPTION (nullable), DETAILS (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); PK or UNIQUE (INDEX_VERSION_ID, EMBEDDER_ID, CONFIG_NAME); ON DELETE CASCADE with INDEX_VERSION
+EVAL_RUN: EVAL_RUN_ID (PK), INDEX_VERSION_ID (FK → INDEX_VERSION, NOT NULL, idx), EVAL_RECORD_ID (FK → EVAL_RECORD, NOT NULL, idx), METRIC_VALUE (NOT NULL), QUESTION_TYPE_ID (FK → QUESTION_TYPE, NOT NULL, idx), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), STATUS_ID (FK → STATUS, NOT NULL, idx)
+EVAL_TYPE: EVAL_TYPE_ID (PK), EVAL_NAME (NOT NULL, UNIQUE), EVAL_DESCRIPTION (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable)
+EVAL_RECORD: EVAL_RECORD_ID (PK), METRIC_NAME (NOT NULL, UNIQUE), EVAL_DESCRIPTION (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable)
+STATUS: STATUS_ID (PK), STATUS_NAME (NOT NULL, UNIQUE), STATUS_DESCRIPTION (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable)
+QUESTION_TYPE: QUESTION_TYPE_ID (PK), QUESTION_TYPE (NOT NULL, UNIQUE), QUESTION_TYPE_DESRIPTION (nullable), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable)
+
+Catalog FKs (CHUNKER, PARSER, EMBEDDER, STATUS, EVAL_RECORD, QUESTION_TYPE): ON DELETE RESTRICT. Index every FK column used in joins/filters; partial index on ACTIVE = true for catalog lookups where useful.
+
+**DDL for Ingestion:**
+Retrieval and eval only mean something if I can point at the exact documents,
+chunks, and embeddings that produced a given `INDEX_VERSION`. Ingestion DDL
+exists to persist that trail: which source file was parsed under which version,
+whether the run succeeded or failed, per-document confidence signals from the
+parser, and the ordered chunk text plus page/region anchors and vectors used
+at search time. Ground truth in the golden set is document location (page /
+region), not chunk id — so `CHUNK_REGION` and reading order must survive
+re-chunk experiments even when chunk ids change across versions.
+
+For this purpose we are designing these tables:
+
+DOCUMENT: DOCUMENT_ID (PK), INDEX_VERSION_ID (FK → INDEX_VERSION, NOT NULL, idx), DOCUMENT_NAME (NOT NULL), DOCUMENT_SOURCE (NOT NULL), STATUS_ID (FK → STATUS, NOT NULL, idx), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable), SOURCE_HASH (NOT NULL), START_TIME (nullable), END_TIME (nullable), ERRORS (LIST / JSONB, NOT NULL default []); UNIQUE (INDEX_VERSION_ID, SOURCE_HASH)
+DOCUMENT_CONFIDENCE: DOCUMENT_CONFIDENCE_ID (PK), DOCUMENT_ID (FK → DOCUMENT, NOT NULL, idx, ON DELETE CASCADE), NAME (NOT NULL), VALUE (NOT NULL), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); UNIQUE (DOCUMENT_ID, NAME)
+DOCUMENT_CHUNK: CHUNK_ID (PK), DOCUMENT_ID (FK → DOCUMENT, NOT NULL, idx, ON DELETE CASCADE), CHUNK_LABLE (nullable), CHUNK_HEADING_PATH (nullable), CHUNK_REGION (JSON BLOB of page - bbox charstart to char end; JSONB, nullable), READING_ORDER (NOT NULL), CONTENT (NOT NULL), EMBEDDING_VECTOR (nullable until embed; vector(N) + HNSW when dimension fixed), CREATED_DATE (NOT NULL), CREATED_BY (NOT NULL), ACTIVE (NOT NULL, default true), MODIFIED_DATE (nullable), MODIFIED_BY (nullable); UNIQUE (DOCUMENT_ID, READING_ORDER)
+
+**How I'd know this was wrong:** if comparing two index versions forces joins
+across so many config / catalog tables that I cannot reconstruct “what ran”
+from a single `INDEX_VERSION` row plus its children; if storing embeddings
+beside chunks makes re-embed or dimension changes require rewriting every
+document row instead of a clean new version; if `CHUNK_REGION` JSON drifts
+from the golden-set `{doc_id, page, region}` shape so eval cannot match hits
+to ground truth without a translation layer; or if soft-delete (`ACTIVE`)
+plus CASCADE children still leaves orphaned eval metrics pointing at index
+versions I thought I had retired — then simplify (fewer config tables, vectors
+in a side table keyed by version, stricter region schema) before the baseline
+numbers depend on this layout.
 ---
 
+## [2026-10-29] Eval/ingestion schema revisions after review
+
+The `[2026-10-28]` draft above got reviewed before being migrated. These are
+the changes made to it, and why.
+
+**Chose:**
+- **`INDEX_RUN` is the execution anchor for both eval and documents**, not
+  `INDEX_VERSION`. `EVAL_RUN.INDEX_VERSION_ID` and `DOCUMENT.INDEX_VERSION_ID`
+  both became `INDEX_RUN_ID` instead. `INDEX_VERSION` stays the *config*
+  identity (which chunker/parser/embedder, which params); `INDEX_RUN` is one
+  concrete execution of that config, with its own `DOC_COUNT`/`CHUNK_COUNT`/
+  `TIME_ELAPSED`/`STATUS_ID`. One eval pass is scoped to one `INDEX_RUN`, so
+  `UNIQUE (INDEX_RUN_ID, EVAL_RECORD_ID, QUESTION_TYPE_ID)` on `EVAL_RUN`
+  enforces that — a second eval pass against the same run has to be a
+  deliberate delete-and-reinsert, not a silent duplicate row.
+- **Kept `CHUNKER_ID`/`EMBEDDER_ID`/`PARSER_ID` as `NOT NULL` FKs on
+  `INDEX_VERSION`.** These three are what determine the physical embedding
+  space — moving them out would remove the only DB-level guarantee behind
+  "never mix embeddings from different models in one index." Instead, the
+  redundant copies of those same IDs on `INDEX_PARSER_CONFIG` /
+  `INDEX_CHUNKER_CONFIG` / `INDEX_EMBEDDER_CONFIG` are dropped — those three
+  tables key on `(INDEX_VERSION_ID, CONFIG_NAME)` only, joining through
+  `INDEX_VERSION` when a config row needs to be filtered by parser/chunker/
+  embedder. One source of truth for "which embedder," on the table that's
+  supposed to be the guardrail.
+  - A later pipeline stage that only affects *retrieval* (reranker, query
+    rewriting) does **not** get a column on `INDEX_VERSION` for the same
+    reason — those don't change what's stored, so they'll get their own
+    config table referenced from eval/retrieval, not from the index itself.
+- **`EVAL_TYPE` wired into `EVAL_RECORD`** via `EVAL_RECORD.EVAL_TYPE_ID`
+  (the `[10-28]` draft declared `EVAL_TYPE` but nothing referenced it). Gives
+  a three-level hierarchy: `EVAL_TYPE` (e.g. RECALL) → `EVAL_RECORD` (e.g.
+  recall@1, recall@5) → `EVAL_RUN` (the actual scored value).
+- **`CHUNK_REGION` stays one JSONB column holding the full list of a chunk's
+  regions** (`page`, `bbox`, `char_start`, `char_end` per entry — a chunk can
+  legitimately span many). Nothing queries into it from SQL; the resolver in
+  issue 0.8 loads it and matches in Python, so there's no need for a child
+  per-region table.
+- **`DOCUMENT_CONFIDENCE.PAGE_NO` is `NOT NULL` with `0` meaning
+  document-level**, not a nullable column. Postgres never treats `NULL =
+  NULL` for a unique constraint, so a plain `UNIQUE (DOCUMENT_ID, PAGE_NO,
+  NAME)` would silently let duplicate document-level rows through if
+  `PAGE_NO` were nullable. `0` is a safe sentinel because real pages are
+  1-indexed everywhere else in this schema.
+- **`INDEX_RUN.DOC_COUNT`/`CHUNK_COUNT` are nullable**, not `NOT NULL` —
+  they're only known once the run finishes, and a run row needs to exist
+  while `STATUS_ID` is still "running."
+- **`DOCUMENT` keeps its own `STATUS_ID`.** I first dropped it, reasoning
+  `INDEX_RUN.STATUS_ID` plus `ERRORS` was enough signal — wrong, because one
+  `INDEX_RUN` parses *many* documents, so a single run-level status can't
+  represent "23 of 25 documents succeeded, 2 failed." Per-document status
+  (`SUCCESS`/`PARTIAL_SUCCESS`/`FAILURE`/…) has to live on `DOCUMENT` itself;
+  `INDEX_RUN.STATUS_ID` is the run-level rollup, not a substitute for it.
+  `ERRORS` stays alongside it for the actual error detail, same as before.
+
+**How I'd know this was wrong:** if `INDEX_RUN` as the resumability key turns
+out to assume cross-run resumption I didn't actually mean (i.e. if "resume an
+interrupted ingestion" needs to reuse documents already parsed under a
+*different* `INDEX_RUN_ID` of the same `INDEX_VERSION`, not just the current
+run) — then `DOCUMENT`'s uniqueness key needs to widen back to include
+`INDEX_VERSION_ID`, not just `INDEX_RUN_ID`.
 
 ## Debug drill
 

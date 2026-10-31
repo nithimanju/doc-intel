@@ -599,6 +599,124 @@ interrupted ingestion" needs to reuse documents already parsed under a
 run) — then `DOCUMENT`'s uniqueness key needs to widen back to include
 `INDEX_VERSION_ID`, not just `INDEX_RUN_ID`.
 
+## [2026-10-29] Embedder Selection for RAG.
+
+Refered benchmark is mteb: https://huggingface.co/spaces/mteb/leaderboard
+Criteria used for selecting the embedding model: Model compatible with multi-lingual, model parameter, Mean, Bitext, Classification, Retrieval, Clustering, STS, PairClass, Reranking, MultiLabel Class, multi-type (text,vedio,song,image) -- preferred.
+Since the embedding is used for RAG process evaluate Retrieval, STS and for computational value looked below 300M parameter embedding model.
+Compared the two candidates below on MTEB Multilingual v2 (score by task type):
+
+![MTEB Multilingual v2: harrier-oss-v1-270m vs embeddinggemma-2](docs/images/mteb-multilingual-v2-harrier-vs-embeddinggemma.png)
+
+| | harrier-oss-v1-270m | embeddinggemma-2 |
+|---|---|---|
+| Modalities | text | text, image, audio, video |
+| Parameters (active) | 268M (100M) | 271M (137M) |
+| Embedding dim | 640 | 768 |
+| Max tokens | 32,768 | 8,192 |
+| Memory | 512 MB | 1.0 GB |
+| Released | 2026-03-27 | 2026-10-06 (3 weeks ago) |
+| Licence | open licence | Gemma terms (not an open licence) |
+| Weights open | yes | yes |
+| Paper | no | yes |
+| Training data listed | none | FEVER, HotpotQA, MIRACL, NQ hard negatives |
+| Retrieval score (chart above) | ~66 | ~60.5 |
+
+Caveat:
+Zero-shot is 78% for Harrier against 99% for EmbeddingGemma-2. That means roughly a fifth of the benchmark’s data overlaps with what Harrier was trained on. Its score is real, but part of it is familiarity and not generalization.
+
+**Chose:** harrier-oss-v1-270m — ahead for a text-only RAG system.
+- Retrieval is about 6 points higher on the chart above (~66 vs ~60.5).
+- Context is 32K against 8K. Chunks won’t be that long, so this is a minor
+  advantage.
+- Memory is half, and the active-parameter count is lower (100M against
+  137M), which probably means lower latency — check this rather than
+  assuming it.
+- Its licence is open. The Gemma terms carry use conditions that matter more
+  for a public portfolio repo; read them before relying on that model.
+- Both dimensions (640 and 768) are under pgvector’s 2,000-dimension index
+  limit, so that criterion doesn’t separate them.
+
+**Rejected:** embeddinggemma-2 — multimodal and stronger zero-shot coverage
+are real advantages, but this corpus/RAG path is text-only for now, and the
+licence plus lower retrieval score tip the trade-off the other way.
+
+**How I'd know this was wrong:** if measured embed latency or memory on the
+dev machine/container doesn’t beat EmbeddingGemma-2 despite the smaller
+active-parameter story; if zero-shot overlap inflates Harrier’s MTEB
+retrieval number and golden-set recall@k is worse once both are indexed; or
+if we later need image/audio/video embeddings in the same index — then
+revisit EmbeddingGemma-2 (or a multimodal peer) with a new measured baseline.
+
+## [2026-10-30] Embedding model deployment: TEI container for Harrier
+
+**Embedding model deployment decision:**
+
+**Context:** Issue 0.6 embeds chunks and issue 0.7 embeds queries with
+microsoft/harrier-oss-v1-270m (embedder choice recorded in the 2026-10-29
+entry; the Harrier vs EmbeddingGemma-2 bake-off on the 74 golden questions
+is still pending). This entry covers only where the model runs.
+
+**Chose:** Option B. Hugging Face Text Embeddings Inference (TEI) as a
+separate container (ghcr.io/huggingface/text-embeddings-inference:cpu-1.9,
+pin the exact tag), with a small HTTP client in the app.
+
+**Why:**
+- Process isolation. The model runs in its own container with its own memory
+  cap, separate from Docling. A crash or memory spike in one does not kill
+  the other. (Same host, so CPU and RAM are still shared at the machine
+  level; the isolation is process-level, not hardware-level.)
+- Independent scaling. Replicas or a GPU can be added behind one service
+  name without changing application code.
+- One embedder for ingestion (0.6), retrieval (0.7) and the later API, so
+  documents and queries cannot drift onto different weights.
+- Less code to own. Health checks, Prometheus metrics, token-aware batching,
+  queueing, backpressure (429) and typed error codes come with TEI. I write
+  a ~40-line client, not a server.
+
+**Rejected:**
+- A. In-process sentence-transformers: matches the model card exactly, but
+  ties the model's memory and failures to the ingestion process, and every
+  program loads its own copy (~0.5 GB).
+- C. Custom FastAPI + sentence-transformers: exact match with the card and
+  isolated, but I would own the server, Dockerfile, dependency tree, batching,
+  health and error mapping, and it is slower than TEI.
+
+**Trade-off accepted:** Harrier-on-TEI is inferred from TEI's source (it
+implements Gemma3 causal masking, sliding window and last-token pooling),
+not documented for this model. TEI also runs float32 on CPU, not BF16, so
+vectors drift slightly from the reference. At ~250 documents, a separate
+service is an architecture choice, not a speed need. One local HTTP hop per
+batch is accepted.
+
+**Gate before use (parity check):** Embed 200 sampled chunks with both
+sentence-transformers (the model card's code) and TEI. Proposed pass
+criteria, fixed before running:
+- cosine similarity >= 0.999 between the two vectors for every sampled chunk;
+- identical top-5 retrieved chunks for at least 95% of a sample of golden
+  questions.
+Record the TEI image tag and the model sha from /info with the result.
+
+**How we'd know this was wrong:**
+- Parity check fails: switch to Option C and record why.
+- Embedding throughput or per-batch latency through TEI is materially worse
+  than the in-process reference on the full corpus (threshold: wall-clock
+  time to embed the full corpus through TEI must not exceed 1.5× the
+  in-process reference on the same machine, same batch size; set before
+  measuring).
+- Query-time recall drops when the instruction prefix goes through TEI
+  versus the reference path (prompt handling is checked in issue 0.7).
+
+**Operational notes:**
+- Documents are sent without a prompt. Queries must carry the model card's
+  instruction prefix; verify it through TEI, since missing it fails silently.
+- truncate stays false so oversized chunks error instead of being silently
+  cut. Log 413/422/424 per chunk to the status table; retry 429/503.
+- Store the model sha from /info on the index version row.
+
+**Parity check result:** _(pending — record date, TEI image tag, model sha,
+min/mean cosine, top-5 agreement rate once run.)_
+
 ## Debug drill
 
 

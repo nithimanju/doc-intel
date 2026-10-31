@@ -1,0 +1,26 @@
+services:
+  embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    container_name: doc-intel-embed
+    environment:
+      MODEL_ID: ${EMBEDDING_MODEL_NAME}
+      REVISION: ${EMBEDDING_MODEL_REVISION}
+      DTYPE: float32
+      MAX_CLIENT_BATCH_SIZE: 32
+      MAX_BATCH_TOKENS: 4096
+      AUTO_TRUNCATE: "true"
+    volumes:
+      - doc_intel_embed_cache:/data
+    ports:
+      - "8081:80"
+    networks: [doc_intel_network]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:80/health || exit 1"]
+      interval: 10s
+      retries: 30
+      start_period: 60s
+volumes:
+  doc_intel_embed_cache:
+networks:
+  doc_intel_network:
+    name: doc_intel_network

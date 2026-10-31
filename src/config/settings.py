@@ -18,7 +18,7 @@ EMBEDDING_MODEL_NAME: str = os.getenv(
 )
 CHUNK_MAX_TOKEN_LIMIT: int = int(os.getenv("CHUNK_MAX_TOKEN_LIMIT", "1000"))
 
-EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+EMBEDDING_DIMENSION: int = int(os.getenv("EMBEDDING_DIMENSION", "640"))
 
 HF_TOKEN: str | None = os.getenv("HF_TOKEN") or None
 

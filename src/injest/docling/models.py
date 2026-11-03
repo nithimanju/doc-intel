@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from src.vo.index_vo import IndexRun, IndexVersion
+
 
 @dataclass
 class ChunkRegion:
@@ -42,6 +44,8 @@ class DocumentRecord:
     end_time: datetime | None
     source_hash: str
     chunks: list[ChunkRecord] = field(default_factory=list)
+    index_version: IndexVersion | None = None
+    index_run: IndexRun | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

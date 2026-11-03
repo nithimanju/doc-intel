@@ -717,6 +717,132 @@ Record the TEI image tag and the model sha from /info with the result.
 **Parity check result:** _(pending — record date, TEI image tag, model sha,
 min/mean cosine, top-5 agreement rate once run.)_
 
+## [2026-11-04] Persistence layer: VO package and psycopg3 insert-if-not-exist
+**Chose:** Value objects (dataclasses) in `src/vo/` (`index_vo`, `eval_vo`,
+`catalog_vo`, `document_vo`), separate from persistence code in
+`src/persistance/`. VOs reference each other as objects, not ids
+(`IndexVersion` holds `Chunker`/`Parser`/`Embedder`, each holding its
+`IndexConfig` list; `IndexRun` holds its `IndexVersion` and `Status`;
+`Document` holds its `Status`, `IndexRun`, confidences and chunks). Database ids are optional fields, `None` until the
+row is inserted. Repo functions use plain psycopg3 SQL with one parameterized
+statement per table. Catalog rows follow `is_*_present` (lookup by name +
+version), `insert_*`, `insert_*_if_not_exist`, which fills the id on the VO and
+returns it.
+**Rejected:** ORM (SQLAlchemy models) — `DATABASE_URL` is unused config for
+Alembic only and no session/engine exists; adds a layer for no gain now.
+**Rejected:** psycopg2 `execute_values` — the installed driver is psycopg3.
+**Rejected:** VOs carrying foreign-key ids — callers would have to resolve ids
+themselves and could mix a chunker from one version with another version's
+configs.
+**Trade-off accepted:** check-then-insert is not atomic. Two processes inserting
+the same name + version at once: the second fails on the UNIQUE constraint
+instead of duplicating. No retry logic yet. Each `insert_*_if_not_exist` commits
+on its own, so callers cannot batch them into a larger transaction.
+**How we'd know this was wrong:** unique-violation errors in a parallel ingest
+run, or `executemany` becoming the bottleneck for `document_chunk` (switch that
+table to COPY).
+
+## [2026-11-04] Component settings returned as VOs; configs stored per index version
+**Chose:** `get_chunker_setting()`, `get_embedder_setting()` and
+`get_parser_setting()` read `settings.py` and return `Chunker`/`Embedder`/
+`Parser` VOs. Name and version come from `CHUNK_NAME`/`CHUNKER_VERSION`,
+`EMBEDDING_NAME`/`EMBEDDING_VERSION`, `PARSER_NAME`/`PARSER_VERSION`; every
+tunable (batch size, token limit, OCR flags, ...) becomes an `IndexConfig`
+(string value, bools as `true`/`false`) on that VO. Configs are written only
+when an `IndexVersion` is inserted, because the `index_*_config` tables are
+keyed on `index_version_id`, not on the component.
+**Rejected:** returning plain dicts (previous behaviour) — nothing could map
+them to the catalog tables without a second conversion step.
+**Rejected:** storing configs at component insert — the schema has no
+component-level config table, and the same chunker can run with different
+settings in different index versions.
+**Trade-off accepted:** an existing `IndexVersion` (matched by `version`) never
+has its configs updated (so version will have to be given/updated in env properly); changed settings need a new version label. Config values
+are all strings, so numeric/boolean typing is lost in the database.
+**How we'd know this was wrong:** two runs with different settings end up
+sharing one index version and their eval numbers cannot be told apart.
+
+## [2026-11-04] `index_version.version` column (migration b7d3e91a4c25)
+**Chose:** Add `index_version.version VARCHAR(50) NOT NULL UNIQUE`; "Does this index version already exist" is answered by this label.
+**Rejected:** identifying a version by chunker + embedder + parser ids plus
+equal config rows — no schema change, but the match needs a comparison over three
+EAV tables and still cannot tell apart two intentional versions with identical
+settings.
+**Trade-off accepted:** the version label is chosen by the caller, so it can be
+reused by mistake; reusing a label silently returns the old row and ignores new
+settings (see previous entry).
+**How we'd know this was wrong:** a label is reused with different settings.
+
+## [2026-11-04] Document ingestion order: index_run per execution, document keyed on index_run
+**Chose:** One `index_run` row per app execution, created from the persisted
+`IndexVersion` (an index_version has many runs; a run has many documents). The
+run is attached to the `DocumentRecord` (`index_run`), and `document.index_run_id`
+stores it (schema unchanged). Order in `app.py`: parse, chunk, embed, then
+`insert_index_version_if_not_exist`, `insert_index_run` (status `running`,
+`doc_count`, `chunk_count`), `insert_document` (document row, then
+`document_confidence`, then `document_chunk`, one transaction), then
+`finish_index_run` (status `completed`, `time_elapsed`). Statuses are created by
+name on first use (`ensure_status`). `document_confidence` is keyed on
+`(document_id, page_no, name)`: docling's overall scores are stored with
+`page_no` 0 and the per-page scores under `pages` with their page number.
+Chunk ids come back from the insert (`RETURNING chunk_id`) and are put on the VO.
+`document_confidence` and `document_chunk` rows are inserted in batches of
+`DB_BATCH_SIZE` (env, default 2000, in `settings.py` and `.env.example`), one
+`executemany` per batch, all inside the same transaction. Postgres has no row
+limit here. The batch size is a memory cap only (rows and 640-float vectors built
+per call), not a speed setting: psycopg3 `executemany` already pipelines
+statements (pipeline mode, confirmed on in the dev container: psycopg 3.3.6,
+libpq 18), which is what saves the per-row round trips versus a plain loop.
+**Rejected:** moving `document` to an `index_version_id` foreign key (drafted as
+a migration, not applied) — it removes the run, so there would be nowhere to
+record one execution's doc/chunk counts, status and elapsed time, and re-running
+the same version would be indistinguishable from the first run.
+**Rejected:** storing only the document's overall confidence — loses per-page
+scores that later quality filtering needs.
+**Trade-off accepted:** `insert_document` does no duplicate check. A second
+insert of the same `source_hash` into the same run fails on the
+`(index_run_id, source_hash)` unique constraint; each app execution makes a new
+run, so re-ingesting the same file works but stores it again. If the app fails
+after `insert_index_run` the run stays at `running` (no cleanup yet). The run's
+`time_elapsed` includes parsing, chunking and embedding but is measured before the
+final status update. `document_source` is passed in by the caller because
+`DocumentRecord` has no source field. (These are intentionall for Dev Mode)
+**How we'd know this was wrong:** For batching: inserting the chunks of a very large document is measurably slow even with pipelining (then switch `document_chunk` to COPY; changing `DB_BATCH_SIZE` will not fix that). Pipeline mode also needs libpq 14 or newer; on an older client `executemany` falls back to one round trip per row.
+
+## [2026-11-04] Document status seed, partial success, and per-chunk content hash
+**Chose:** Docling's status, except that if some chunks were not embedded it becomes `partial_success`, and if none were it becomes `failure`. We maps any status string other than success or partial_success to `FAILURE`. Each chunk gets `content_hash`, the SHA-256 (hex) of its UTF-8 content, computed in `format_to_document_chunk_entities`, stored on the `DocumentChunk` VO and inserted in the same batch.
+**Rejected:** creating the three statuses lazily on first use — the set of
+document outcomes would depend on which cases happened to occur, and names could
+drift in spelling or case.
+**Rejected:** hashing in the database on insert — the VO would not carry the hash,
+and the Python and SQL values could diverge. (The backfill is SQL, and was checked
+to equal the Python value on all 27 rows.)
+**Trade-off accepted:** Docling statuses like `skipped` or `pending`
+are stored as `FAILURE`. The hash covers the contextualized chunk text exactly as
+embedded, so a change to how headings are prepended changes every hash.
+**How we'd know this was wrong:** documents that were skipped on purpose show up
+as failures in run summaries, or two index versions chunk the same text but the
+hashes differ because of heading formatting, making them useless for comparing
+chunks across versions.
+
+## [2026-11-04] Two status levels: document outcome vs index run state
+**Chose:** `status` holds two kinds of names, used at different levels.
+`SUCCESS`, `PARTIAL_SUCCESS`, `FAILURE` describe one **document**
+(`document.status_id`). `RUNNING` and `COMPLETED` describe one **index run**
+(`index_run.status_id`): `RUNNING` when the run row is created, `COMPLETED` when
+`finish_index_run` is called after the document is stored. `COMPLETED` means the
+run finished, not that its documents succeeded.
+**Rejected:** one shared set of names for both levels — a run holds many
+documents, so `SUCCESS` on a run would be ambiguous (all documents, or just the
+run itself).
+**Trade-off accepted:** a run is marked `COMPLETED` even when its document ended
+as `FAILURE` or `PARTIAL_SUCCESS`, so run status alone does not tell you whether
+the data is usable. Old test documents 1 and 2 still point at a lowercase
+`success` row.
+**How we'd know this was wrong:** someone reads `COMPLETED` as "everything
+worked" when summarising runs, or the eval step needs a single run-level rollup
+(then add a run status derived from its documents, e.g. `PARTIAL_SUCCESS`).
+
 ## Debug drill
 
 
